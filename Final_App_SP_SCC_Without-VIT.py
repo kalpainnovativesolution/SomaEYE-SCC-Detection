@@ -5,12 +5,12 @@ from PIL import Image
 import tempfile
 import os
 import base64
+import gdown
 
 # -----------------------------
 # YOLO Imports
 # -----------------------------
 from ultralytics import YOLO
-
 
 # =====================================================
 # PAGE CONFIG
@@ -99,7 +99,6 @@ st.markdown(
 # =====================================================
 # CONFIG
 # =====================================================
-DETECTION_MODEL_PATH = r"D:\Microcell & Surface Demo Applications\SCC Detection App\New 100 sample model\best.pt"
 DETECTION_CONF = 0.5
 
 SCC_MULTIPLIER_1 = 10
@@ -107,11 +106,26 @@ SCC_MULTIPLIER_2 = 1000
 SCC_DIVISOR = 1.2
 
 # =====================================================
-# LOAD YOLO MODEL
+# LOAD YOLO MODEL FROM GOOGLE DRIVE (SINGLE FILE)
 # =====================================================
+GDRIVE_FILE_ID = "15dGBp4DIKu2VLNlMdTFRU4_dPeN4ehwp"
+MODEL_NAME = "best.pt"
+MODEL_DIR = "models"
+MODEL_PATH = os.path.join(MODEL_DIR, MODEL_NAME)
+
 @st.cache_resource
 def load_detection_model():
-    model = YOLO(DETECTION_MODEL_PATH)
+    os.makedirs(MODEL_DIR, exist_ok=True)
+
+    if not os.path.exists(MODEL_PATH):
+        with st.spinner("Downloading SCC detection model from Google Drive..."):
+            gdown.download(
+                id=GDRIVE_FILE_ID,
+                output=MODEL_PATH,
+                quiet=False
+            )
+
+    model = YOLO(MODEL_PATH)
     return model, model.names
 
 with st.spinner("Loading detection model..."):
@@ -171,11 +185,11 @@ scc_count = (total_cells * SCC_MULTIPLIER_1 * SCC_MULTIPLIER_2) / SCC_DIVISOR
 
 st.markdown("## 🧪 Detected Somatic Cells")
 
-if scc_count >= 1000000:
+if scc_count >= 1_000_000:
     result = "SCC > 1,000,000 cells/ml"
     card = "critical"
 
-elif scc_count <= 200000:
+elif scc_count <= 200_000:
     result = "SCC < 200,000 cells/ml"
     card = "clean"
 
