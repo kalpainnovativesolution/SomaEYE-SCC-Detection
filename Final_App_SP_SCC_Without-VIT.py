@@ -76,7 +76,7 @@ h1 { font-weight: 800; color: #1f2a6d; }
     font-size: 0px;
 }
 [data-testid="stFileUploader"] button::after {
-    content: "Capture Images";
+    content: "Capture Image";
     font-size: 16px;
     font-weight: 600;
 }
@@ -134,65 +134,59 @@ with st.spinner("Loading detection model..."):
 # =====================================================
 # FILE UPLOADER
 # =====================================================
-uploaded_files = st.file_uploader(
-    "Capture exactly 3 images for detection",
+uploaded_file = st.file_uploader(
+    "Capture 1 image for detection",
     type=["jpg", "jpeg", "png"],
-    accept_multiple_files=True,
     key=f"scc_uploader_{st.session_state.uploader_version}"
 )
 
-if not uploaded_files or len(uploaded_files) != 3:
-    st.warning("Please Capture exactly 3 images.")
+if not uploaded_file:
+    st.info("Please capture 1 image to perform SCC detection.")
     st.stop()
 
 # =====================================================
-# PROCESS IMAGES
+# PROCESS IMAGE
 # =====================================================
-total_cells = 0
-cols = st.columns(3)
+original_pil = Image.open(uploaded_file).convert("RGB")
+original_rgb = np.array(original_pil)
 
-for idx, (file, col) in enumerate(zip(uploaded_files, cols), 1):
+with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+    tmp_path = tmp.name
+    original_pil.save(tmp_path)
 
-    original_pil = Image.open(file).convert("RGB")
-    original_rgb = np.array(original_pil)
+results = detection_model.predict(tmp_path, conf=DETECTION_CONF, verbose=False)
+os.remove(tmp_path)
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-        tmp_path = tmp.name
-        original_pil.save(tmp_path)
+img_out = original_rgb.copy()
+cells = 0
 
-    results = detection_model.predict(tmp_path, conf=DETECTION_CONF, verbose=False)
-    os.remove(tmp_path)
+for r in results:
+    if r.boxes is None:
+        continue
+    for box, cls in zip(r.boxes.xyxy.cpu().numpy(), r.boxes.cls.cpu().numpy()):
+        if detection_class_names[int(cls)].lower() == "cells":
+            x1, y1, x2, y2 = map(int, box)
+            cv2.rectangle(img_out, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cells += 1
 
-    img_out = original_rgb.copy()
-    cells = 0
-
-    for r in results:
-        if r.boxes is None:
-            continue
-        for box, cls in zip(r.boxes.xyxy.cpu().numpy(), r.boxes.cls.cpu().numpy()):
-            if detection_class_names[int(cls)].lower() == "cells":
-                x1, y1, x2, y2 = map(int, box)
-                cv2.rectangle(img_out, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cells += 1
-
-    total_cells += cells
-    col.image(img_out, caption=f"Image {idx} | Cells: {cells}", use_container_width=True)
+# =====================================================
+# DISPLAY IMAGE
+# =====================================================
+st.image(img_out, caption=f"Detected Cells: {cells}", use_container_width=True)
 
 # =====================================================
 # FINAL RESULT CARD
 # =====================================================
-scc_count = (total_cells * SCC_MULTIPLIER_1 * SCC_MULTIPLIER_2) / SCC_DIVISOR
+scc_count = (cells * SCC_MULTIPLIER_1 * SCC_MULTIPLIER_2) / SCC_DIVISOR
 
 st.markdown("## 🧪 Detected Somatic Cells")
 
 if scc_count >= 1_000_000:
     result = "SCC > 1,000,000 cells/ml"
     card = "critical"
-
 elif scc_count <= 200_000:
     result = "SCC < 200,000 cells/ml"
     card = "clean"
-
 else:
     result = f"SCC = {int(scc_count)} cells/ml"
     card = "warn"
