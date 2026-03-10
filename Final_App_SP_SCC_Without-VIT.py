@@ -6,6 +6,10 @@ import tempfile
 import os
 import base64
 import gdown
+
+# -----------------------------
+# YOLO Imports
+# -----------------------------
 from ultralytics import YOLO
 
 # =====================================================
@@ -18,7 +22,7 @@ st.set_page_config(
 )
 
 # =====================================================
-# SESSION STATE
+# SESSION STATE (UPLOADER VERSIONING)
 # =====================================================
 if "uploader_version" not in st.session_state:
     st.session_state.uploader_version = 0
@@ -54,7 +58,7 @@ h1 { font-weight: 800; color: #1f2a6d; }
 .card.clean { border-color: #22c55e; }
 .card.warn { border-color: #f97316; }
 .card.critical { border-color: #ef4444; }
-.card.info { border-color: #3b82f6; }
+.card.info { border-color: #2563eb; }
 
 .card-title {
     font-size: 15px;
@@ -102,16 +106,14 @@ SCC_MULTIPLIER_1 = 10
 SCC_MULTIPLIER_2 = 1000
 SCC_DIVISOR = 1.2
 
-# IMPORTANT:
-# Replace this with your real microscope calibration.
-# Example: if 1 micron = 2 pixels, then PIXELS_PER_MICRON = 2.0
-PIXELS_PER_MICRON = 2.0
+# Field of view in microns
+FOV_WIDTH_MICRONS = 200.0
 
-# Size threshold in microns
+# Cell size threshold
 CELL_SIZE_THRESHOLD_MICRON = 10.0
 
 # =====================================================
-# LOAD YOLO MODEL FROM GOOGLE DRIVE
+# LOAD YOLO MODEL FROM GOOGLE DRIVE (SINGLE FILE)
 # =====================================================
 GDRIVE_FILE_ID = "15dGBp4DIKu2VLNlMdTFRU4_dPeN4ehwp"
 MODEL_NAME = "best.pt"
@@ -151,18 +153,12 @@ if not uploaded_files or len(uploaded_files) != 3:
     st.stop()
 
 # =====================================================
-# HELPERS
-# =====================================================
-def px_to_micron(px, pixels_per_micron):
-    return px / pixels_per_micron
-
-# =====================================================
 # PROCESS IMAGES
 # =====================================================
 total_cells = 0
 total_less_than_10 = 0
 total_greater_equal_10 = 0
-all_cell_sizes_micron = []
+all_cell_sizes_microns = []
 
 cols = st.columns(3)
 
@@ -170,6 +166,15 @@ for idx, (file, col) in enumerate(zip(uploaded_files, cols), 1):
 
     original_pil = Image.open(file).convert("RGB")
     original_rgb = np.array(original_pil)
+
+    img_h, img_w = original_rgb.shape[:2]
+
+    # Convert pixel to micron using FOV
+    # Width FOV is fixed at 200 microns
+    fov_height_microns = FOV_WIDTH_MICRONS * (img_h / img_w)
+
+    microns_per_pixel_x = FOV_WIDTH_MICRONS / img_w
+    microns_per_pixel_y = fov_height_microns / img_h
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
         tmp_path = tmp.name
@@ -179,7 +184,6 @@ for idx, (file, col) in enumerate(zip(uploaded_files, cols), 1):
     os.remove(tmp_path)
 
     img_out = original_rgb.copy()
-
     cells = 0
     less_than_10 = 0
     greater_equal_10 = 0
@@ -196,23 +200,23 @@ for idx, (file, col) in enumerate(zip(uploaded_files, cols), 1):
                 bbox_width_px = x2 - x1
                 bbox_height_px = y2 - y1
 
-                bbox_width_micron = px_to_micron(bbox_width_px, PIXELS_PER_MICRON)
-                bbox_height_micron = px_to_micron(bbox_height_px, PIXELS_PER_MICRON)
+                bbox_width_microns = bbox_width_px * microns_per_pixel_x
+                bbox_height_microns = bbox_height_px * microns_per_pixel_y
 
-                # Use average of width and height as a simple cell size estimate
-                cell_size_micron = (bbox_width_micron + bbox_height_micron) / 2.0
+                # Average size estimate
+                bbox_avg_size_microns = (bbox_width_microns + bbox_height_microns) / 2.0
 
-                image_cell_sizes.append(cell_size_micron)
-                all_cell_sizes_micron.append(cell_size_micron)
+                image_cell_sizes.append(bbox_avg_size_microns)
+                all_cell_sizes_microns.append(bbox_avg_size_microns)
 
-                if cell_size_micron < CELL_SIZE_THRESHOLD_MICRON:
+                if bbox_avg_size_microns < CELL_SIZE_THRESHOLD_MICRON:
                     less_than_10 += 1
-                    color = (0, 255, 0)  # green
-                    label = f"{cell_size_micron:.1f} um"
+                    color = (0, 255, 0)
                 else:
                     greater_equal_10 += 1
-                    color = (0, 165, 255)  # orange
-                    label = f"{cell_size_micron:.1f} um"
+                    color = (0, 165, 255)
+
+                label = f"{bbox_avg_size_microns:.1f} um"
 
                 cv2.rectangle(img_out, (x1, y1), (x2, y2), color, 2)
                 cv2.putText(
@@ -220,7 +224,7 @@ for idx, (file, col) in enumerate(zip(uploaded_files, cols), 1):
                     label,
                     (x1, max(y1 - 8, 20)),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
+                    0.45,
                     color,
                     1,
                     cv2.LINE_AA
@@ -245,11 +249,12 @@ for idx, (file, col) in enumerate(zip(uploaded_files, cols), 1):
         col.markdown(
             f"""
             <div class="card info">
-                <div class="card-title">Image {idx} Size Summary</div>
-                <div style="font-size:15px;color:#0f172a;">
-                    Min size: <b>{min(image_cell_sizes):.2f} µm</b><br>
-                    Max size: <b>{max(image_cell_sizes):.2f} µm</b><br>
-                    Avg size: <b>{np.mean(image_cell_sizes):.2f} µm</b>
+                <div class="card-title">Image {idx} Cell Size Summary</div>
+                <div style="font-size:15px;color:#0f172a;line-height:1.8;">
+                    Min: <b>{min(image_cell_sizes):.2f} µm</b><br>
+                    Max: <b>{max(image_cell_sizes):.2f} µm</b><br>
+                    Avg: <b>{np.mean(image_cell_sizes):.2f} µm</b><br>
+                    FOV: <b>{FOV_WIDTH_MICRONS:.1f} µm × {fov_height_microns:.1f} µm</b>
                 </div>
             </div>
             """,
@@ -259,11 +264,11 @@ for idx, (file, col) in enumerate(zip(uploaded_files, cols), 1):
         col.info(f"No cells detected in Image {idx}")
 
 # =====================================================
-# FINAL SCC RESULT
+# FINAL RESULT CARD
 # =====================================================
 scc_count = (total_cells * SCC_MULTIPLIER_1 * SCC_MULTIPLIER_2) / SCC_DIVISOR
 
-st.markdown("## Detected Somatic Cells")
+st.markdown("## 🧪 Detected Somatic Cells")
 
 if scc_count >= 1_000_000:
     result = "SCC > 1,000,000 cells/ml"
@@ -286,46 +291,45 @@ st.markdown(
 )
 
 # =====================================================
-# SIZE RANGE SUMMARY
+# SIZE DISTRIBUTION SUMMARY
 # =====================================================
-st.markdown("## Cell Size Distribution")
+st.markdown("## 📏 Cell Size Distribution")
 
-st.markdown(
-    f"""
-    <div class="card info">
-        <div class="card-title">Detected Cell Size Range Summary</div>
-        <div style="font-size:18px;color:#0f172a;line-height:1.8;">
-            Total detected cells: <b>{total_cells}</b><br>
-            Cells &lt; 10 µm: <b>{total_less_than_10}</b><br>
-            Cells ≥ 10 µm: <b>{total_greater_equal_10}</b><br>
-            {"Min detected size: <b>" + f"{min(all_cell_sizes_micron):.2f}" + " µm</b><br>" if all_cell_sizes_micron else ""}
-            {"Max detected size: <b>" + f"{max(all_cell_sizes_micron):.2f}" + " µm</b><br>" if all_cell_sizes_micron else ""}
-            {"Average detected size: <b>" + f"{np.mean(all_cell_sizes_micron):.2f}" + " µm</b>" if all_cell_sizes_micron else ""}
+if all_cell_sizes_microns:
+    st.markdown(
+        f"""
+        <div class="card info">
+            <div class="card-title">Detected Cell Size Range Summary</div>
+            <div style="font-size:18px;color:#0f172a;line-height:1.8;">
+                Total detected cells: <b>{total_cells}</b><br>
+                Cells &lt; 10 µm: <b>{total_less_than_10}</b><br>
+                Cells ≥ 10 µm: <b>{total_greater_equal_10}</b><br>
+                Min detected size: <b>{min(all_cell_sizes_microns):.2f} µm</b><br>
+                Max detected size: <b>{max(all_cell_sizes_microns):.2f} µm</b><br>
+                Average detected size: <b>{np.mean(all_cell_sizes_microns):.2f} µm</b>
+            </div>
         </div>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
+        """,
+        unsafe_allow_html=True
+    )
 
-# =====================================================
-# OPTIONAL TABLE OF ALL CELL SIZES
-# =====================================================
-if all_cell_sizes_micron:
-    st.markdown("## Cell Size Details")
+    st.markdown("### Cell Size Details")
     size_data = {
-        "Cell Index": list(range(1, len(all_cell_sizes_micron) + 1)),
-        "Estimated Size (µm)": [round(x, 2) for x in all_cell_sizes_micron],
+        "Cell Index": list(range(1, len(all_cell_sizes_microns) + 1)),
+        "Estimated Size (µm)": [round(x, 2) for x in all_cell_sizes_microns],
         "Range": [
             "< 10 µm" if x < CELL_SIZE_THRESHOLD_MICRON else "≥ 10 µm"
-            for x in all_cell_sizes_micron
+            for x in all_cell_sizes_microns
         ]
     }
     st.dataframe(size_data, use_container_width=True)
+else:
+    st.info("No cells detected to calculate size distribution.")
 
 # =====================================================
 # TEST NEXT SAMPLE BUTTON
 # =====================================================
 st.markdown("---")
-if st.button("Test Next Sample"):
+if st.button("🔄 Test Next Sample"):
     st.session_state.uploader_version += 1
     st.rerun()
